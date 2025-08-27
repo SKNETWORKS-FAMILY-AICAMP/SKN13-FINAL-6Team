@@ -15,7 +15,7 @@ def encode_img_to_base64(img_path: str) -> str:
         return base64.b64encode(img_file.read()).decode('utf-8')
 
 
-def extract_receipt_info(file_obj) -> dict:
+def extract_receipt_info(image_path: str) -> dict:
     """
     영수증 이미지에서 정보 추출 (Upstage Information Extraction 모델 사용)
     """
@@ -74,3 +74,4 @@ def extract_receipt_info(file_obj) -> dict:
     except Exception as e:
         print("결과 파싱 오류:", e)
         return {}
+

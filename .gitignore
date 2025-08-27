@@ -74,7 +74,6 @@ dist/
 #migrations
 backend/receipt/migrations/
 backend/*/migrations/
-
 #receipt services
 backend/receipt/services/
 
@@ -83,4 +82,3 @@ frontend/package-lock.json
 
 # AWS keypair
 *.pem
-frontend/package-lock.json
