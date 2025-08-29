@@ -1,6 +1,6 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework import status
+from rest_framework import status, generics
 from django.db import connection
 from django.http import HttpResponse
 from authapp.decorators import require_auth
@@ -17,9 +17,63 @@ import uuid
 import logging
 from datetime import datetime
 import os
+import re
 
 logger = logging.getLogger(__name__)
 
+class ReceiptListView(generics.ListAPIView):
+    """
+    영수증 목록 조회 (페이징)
+    """
+    @require_auth
+    def get(self, request):
+        user_id = request.user_id
+        page = int(request.query_params.get('page', 1))
+        page_size = int(request.query_params.get('page_size', 20))
+        offset = (page - 1) * page_size
+
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("""
+                    SELECT receipt_id, created_at, store_name, amount
+                    FROM receipt_info
+                    WHERE user_id = %s
+                    ORDER BY created_at DESC
+                    LIMIT %s OFFSET %s
+                """, [user_id, page_size, offset])
+                rows = cursor.fetchall()
+
+                cursor.execute("""
+                    SELECT COUNT(*) FROM receipt_info WHERE user_id = %s
+                """, [user_id])
+                total_count = cursor.fetchone()[0]
+            
+            receipts = [
+                {
+                    "receipt_id": row[0],
+                    "created_at": row[1],
+                    "store_name": row[2],
+                    "amount": row[3],
+                }
+                for row in rows
+            ]
+            
+            return Response({
+                'success': True,
+                'data': {
+                    'receipts': receipts,
+                    'total_count': total_count,
+                    'page': page,
+                    'page_size': page_size
+                }
+            }, status=status.HTTP_200_OK)
+        
+        except Exception as e:
+            logger.error(f"영수증 목록 조회 오류: {str(e)}")
+            return Response({
+                'success': False,
+                'message': '영수증 목록 조회 중 오류 발생'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class ReceiptUploadView(APIView):
     """
@@ -340,13 +394,19 @@ def normalize_date(date_str):
 
     date_str = date_str.strip()
 
+    # 1) 괄호 안의 요일(한글/영문) 제거: (월), (Tue), (수)
+    date_str = re.sub(r'\([^)]*\)', '', date_str).strip()
+
     # 시도할 포맷들
     formats = [
         "%Y-%m-%d %H:%M:%S",  # 2024-02-13 08:23:13
+        "%Y-%m-%d %H:%M",     # 2024-02-13 08:23
         "%Y-%m-%d",           # 2024-02-13
         "%Y/%m/%d",           # 2024/01/24
         "%Y.%m.%d",           # 2024.01.24
         "%Y%m%d",             # 20240213
+        "%Y-%m%d",            # 2024-0213
+        "%Y%m-%d",            # 202402-13
     ]
 
     for fmt in formats:
