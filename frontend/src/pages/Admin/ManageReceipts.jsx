@@ -454,7 +454,27 @@ function ManageReceipts() {
       const url = window.URL.createObjectURL(new Blob([response.data]));
       const link = document.createElement('a');
       link.href = url;
-      link.setAttribute('download', '영수증목록.xlsx');
+
+      // 필터 정보로 파일명 생성
+      let filename = '영수증목록';
+      const parts = [];
+      if (startDate || endDate) {
+        const startStr = startDate ? new Date(startDate).toLocaleDateString('ko-KR').replace(/\./g, '').replace(/ /g, '') : '';
+        const endStr = endDate ? new Date(endDate).toLocaleDateString('ko-KR').replace(/\./g, '').replace(/ /g, '') : '';
+        if (startStr || endStr) parts.push(`${startStr}~${endStr}`);
+      }
+      if (searchType === 'dept' && searchTerm.trim()) {
+        parts.push(`${searchTerm.trim()}팀`);
+      }
+      if (searchType === 'name' && searchTerm.trim()) {
+        parts.push(`${searchTerm.trim()}`);
+      }
+      if (parts.length > 0) {
+        filename += '_' + parts.join('_');
+      }
+      filename += '.xlsx';
+
+      link.setAttribute('download', filename);
       document.body.appendChild(link);
       link.click();
       link.remove();
@@ -466,8 +486,9 @@ function ManageReceipts() {
   };
 
   return (
-    <div className="flex">
-      <AdminSidebar 
+    <div className="flex h-screen">
+      <div className="w-64 bg-gray-800 text-white flex-shrink-0 h-screen">
+        <AdminSidebar 
         userName={userName}
         onUserNameClick={handleUserNameClick}
         onLogout={handleLogout}
@@ -475,7 +496,8 @@ function ManageReceipts() {
         onTabSelect={handleTabSelect}
         onChatPageClick={handleChatPageClick}
       />
-      <div className="flex-1 p-6">
+      </div>
+      <div className="flex-1 overflow-y-auto p-6">
         <h1 className="text-2xl font-bold mb-6">영수증 관리</h1>
         
         {/* 에러 메시지 */}
