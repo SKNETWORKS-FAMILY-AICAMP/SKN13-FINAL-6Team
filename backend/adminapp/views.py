@@ -5,6 +5,12 @@ from django.db import connection
 from authapp.utils import verify_token
 import os
 
+import openpyxl
+from django.http import HttpResponse
+import io
+import traceback
+from datetime import datetime
+
 from .serializers import (
     UserSearchSerializer,
     ConversationSearchSerializer,
@@ -455,11 +461,11 @@ class AdminReceiptsView(APIView):
             
             # 날짜 필터 적용
             if start_date:
-                base_query += " AND rj.created_at >= %s"
+                base_query += " AND r.created_at >= %s"
                 params.append(start_date)
             
             if end_date:
-                base_query += " AND rj.created_at <= %s"
+                base_query += " AND r.created_at <= %s"
                 params.append(end_date + ' 23:59:59')  # 해당 날짜의 마지막 시간까지
             
             # 이름 필터 적용
@@ -474,7 +480,7 @@ class AdminReceiptsView(APIView):
             
             # 신고 여부 필터 적용
             if reported_yn:
-                base_query += " AND rj.status = %s"
+                base_query += " AND r.status = %s"
                 params.append(reported_yn)
             
             # 전체 개수 조회
@@ -527,7 +533,6 @@ class AdminReceiptsView(APIView):
             }, status=status.HTTP_200_OK)
             
         except Exception as e:
-            logger.error(f"영수증 목록 조회 중 오류: {e}")
             return Response({
                 'success': False,
                 'message': '영수증 목록 조회 중 오류가 발생했습니다.',
@@ -626,31 +631,58 @@ class ConversationReportView(APIView):
             page_size = int(request.data.get('page_size', 10))
             
             with connection.cursor() as cursor:
-                # 기본 쿼리 - chat_history, chat_report, user_info JOIN
+                # 기본 쿼리 - chat_history, chat_report, user_info JOIN + 대화 맥락 조회
                 base_query = """
                     SELECT
                         u.dept,
-                        u.naem,
+                        u.name,
                         u.rank,
-                        ch.content as user_input,
-                        ch.content as llm_response,
+                        ch.sender_type,
+                        ch.content as reported_message,
+                        ch.conversation_id,
                         ch.created_at as chat_date,
                         cr.error_type,
                         cr.reason,
-                        cr.crated_at as reported_at,
+                        cr.created_at as reported_at,
                         cr.remark,
                         cr.report_id,
-                        ch.chat_id
+                        ch.chat_id,
+                        -- 사용자 입력 조회 (신고된 메시지가 AI 응답인 경우)
+                        CASE 
+                            WHEN ch.sender_type = 'ai' THEN (
+                                SELECT ch_prev.content 
+                                FROM chat_history ch_prev 
+                                WHERE ch_prev.conversation_id = ch.conversation_id 
+                                AND ch_prev.sender_type = 'user' 
+                                AND ch_prev.created_at < ch.created_at 
+                                ORDER BY ch_prev.created_at DESC 
+                                LIMIT 1
+                            )
+                            ELSE ch.content
+                        END as user_input,
+                        -- LLM 응답 조회 (신고된 메시지가 사용자 입력인 경우)
+                        CASE 
+                            WHEN ch.sender_type = 'user' THEN (
+                                SELECT ch_next.content 
+                                FROM chat_history ch_next 
+                                WHERE ch_next.conversation_id = ch.conversation_id 
+                                AND ch_next.sender_type = 'ai' 
+                                AND ch_next.created_at > ch.created_at 
+                                ORDER BY ch_next.created_at ASC 
+                                LIMIT 1
+                            )
+                            ELSE ch.content
+                        END as llm_response
                     FROM chat_report cr
                     JOIN chat_history ch ON cr.chat_id = ch.chat_id
-                    JOIN user_info u ON cr.reorted_by = u.user_id
+                    JOIN user_info u ON cr.reported_by = u.user_id
                     WHERE 1=1
                 """
                 count_query = """
                     SELECT COUNT(*)
                     FROM chat_report cr
                     JOIN chat_history ch ON cr.chat_id = ch.chat_id
-                    JOIN user_info u ON cr.reorted_by = u.user_id
+                    JOIN user_info u ON cr.reported_by = u.user_id
                     WHERE 1=1
                 """
                 params = []
@@ -706,9 +738,18 @@ class ConversationReportView(APIView):
             columns = [col[0] for col in cursor.description]
             reports = [dict(zip(columns, row)) for row in cursor.fetchall()]
             
+            # 디버깅: 실제 조회된 데이터 확인
+            logger.info(f"조회된 데이터 개수: {len(reports)}")
+            for i, report in enumerate(reports):
+                logger.info(f"데이터 {i+1}: {report}")
+            
             # 데이터 포맷팅
             formatted_reports = []
             for report in reports:
+                # 디버깅을 위한 로깅
+                logger.info(f"원본 데이터 - sender_type: {report.get('sender_type')}, content: {report.get('reported_message')}")
+                logger.info(f"SQL에서 계산된 - user_input: {report.get('user_input')}, llm_response: {report.get('llm_response')}")
+                
                 formatted_reports.append({
                     'dept': report['dept'] or '',
                     'name': report['name'] or '',
@@ -763,25 +804,53 @@ class ConversationReportView(APIView):
             search_keyword = request.GET.get('search_keyword')
             
             with connection.cursor() as cursor:
-                # 기본 쿼리 - chat_history, chat_report, user_info JOIN
+                # 기본 쿼리 - chat_history, chat_report, user_info JOIN + 대화 맥락 조회
                 base_query = """
                     SELECT 
                         u.dept,
                         u.name,
                         u.rank,
-                        ch.content as user_input,
-                        ch.content as llm_response,
+                        ch.sender_type,
+                        ch.content as reported_message,
+                        ch.conversation_id,
                         ch.created_at as chat_date,
                         cr.error_type,
                         cr.reason,
                         cr.created_at as reported_at,
                         cr.remark,
                         cr.report_id,
-                        ch.chat_id
+                        ch.chat_id,
+                        -- 사용자 입력 조회 (신고된 메시지가 AI 응답인 경우)
+                        CASE 
+                            WHEN ch.sender_type = 'ai' THEN (
+                                SELECT ch_prev.content 
+                                FROM chat_history ch_prev 
+                                WHERE ch_prev.conversation_id = ch.conversation_id 
+                                AND ch_prev.sender_type = 'user' 
+                                AND ch_prev.created_at < ch.created_at 
+                                ORDER BY ch_prev.created_at DESC 
+                                LIMIT 1
+                            )
+                            ELSE ch.content
+                        END as user_input,
+                        -- LLM 응답 조회 (신고된 메시지가 사용자 입력인 경우)
+                        CASE 
+                            WHEN ch.sender_type = 'user' THEN (
+                                SELECT ch_next.content 
+                                FROM chat_history ch_next 
+                                WHERE ch_next.conversation_id = ch.conversation_id 
+                                AND ch_next.sender_type = 'ai' 
+                                AND ch_next.created_at > ch.created_at 
+                                ORDER BY ch_next.created_at ASC 
+                                LIMIT 1
+                            )
+                            ELSE ch.content
+                        END as llm_response
                     FROM chat_report cr
                     JOIN chat_history ch ON cr.chat_id = ch.chat_id
                     JOIN user_info u ON cr.reported_by = u.user_id
                     WHERE 1=1
+                    ORDER BY cr.created_at DESC
                 """
                 count_query = """
                     SELECT COUNT(*)
@@ -834,6 +903,7 @@ class ConversationReportView(APIView):
                 name = request.GET.get('name', '')
                 rank = request.GET.get('rank', '')
                 error_type = request.GET.get('error_type', '')
+                reason = request.GET.get('reason', '')
                 remark = request.GET.get('remark', '')
                 
                 if dept:
@@ -868,9 +938,13 @@ class ConversationReportView(APIView):
                     count_query += " AND cr.error_type = %s"
                     params.append(english_error_type)
                 
+                if reason:
+                    base_query += " AND cr.reason ILIKE %s"
+                    count_query += " AND cr.reason ILIKE %s"
+                    params.append(f'%{reason}%')
+                
                 if remark:
                     base_query += " AND cr.remark ILIKE %s"
-                    count_query += " AND cr.remark ILIKE %s"
                     params.append(f'%{remark}%')
                 
                 # 전체 개수 조회
@@ -879,7 +953,7 @@ class ConversationReportView(APIView):
                 
                 # 페이지네이션 적용
                 offset = (page - 1) * page_size
-                base_query += " ORDER BY cr.created_at DESC LIMIT %s OFFSET %s"
+                base_query += " LIMIT %s OFFSET %s"
                 params.extend([page_size, offset])
                 
                 # 실제 데이터 조회
@@ -887,9 +961,18 @@ class ConversationReportView(APIView):
                 columns = [col[0] for col in cursor.description]
                 reports = [dict(zip(columns, row)) for row in cursor.fetchall()]
                 
+                # 디버깅: 실제 조회된 데이터 확인
+                logger.info(f"GET 메서드 - 조회된 데이터 개수: {len(reports)}")
+                for i, report in enumerate(reports):
+                    logger.info(f"GET 메서드 - 데이터 {i+1}: {report}")
+                
                 # 데이터 포맷팅
                 formatted_reports = []
                 for report in reports:
+                    # 디버깅을 위한 로깅
+                    logger.info(f"GET 메서드 - 원본 데이터 - sender_type: {report.get('sender_type')}, content: {report.get('reported_message')}")
+                    logger.info(f"GET 메서드 - SQL에서 계산된 - user_input: {report.get('user_input')}, llm_response: {report.get('llm_response')}")
+                    
                     formatted_reports.append({
                         'dept': report['dept'] or '',
                         'name': report['name'] or '',
@@ -901,12 +984,26 @@ class ConversationReportView(APIView):
                         'reason': report['reason'] or '',
                         'reported_at': report['reported_at'].isoformat() if report['reported_at'] else '',
                         'remark': report['remark'] or '',
-                        'report_id': str(report['report_id']),
+                        'report_id': str(report['chat_id']),
                         'chat_id': str(report['chat_id'])
                     })
                 
                 total_pages = (total_count + page_size - 1) // page_size
                 
+                # 디버깅: 특정 chat_id의 모든 신고 조회
+                debug_chat_id = request.GET.get('debug_chat_id')
+                if debug_chat_id:
+                    cursor.execute("""
+                        SELECT report_id, chat_id, reason, error_type, created_at, remark
+                        FROM chat_report 
+                        WHERE chat_id = %s 
+                        ORDER BY created_at DESC
+                    """, [debug_chat_id])
+                    debug_reports = cursor.fetchall()
+                    logger.info(f"🔍 디버그 조회 - chat_id: {debug_chat_id}, 신고 개수: {len(debug_reports)}")
+                    for i, report in enumerate(debug_reports):
+                        logger.info(f"🔍 디버그 신고 {i+1}: {report}")
+
                 return Response({
                     'success': True,
                     'message': '신고 대화 목록을 성공적으로 조회했습니다.',
@@ -984,13 +1081,13 @@ class ReceiptManagementView(APIView):
                                 # 간단한 파싱으로 품목 정보 추출
                                 items = []
                                 # {'productName': '...', 'quantity': ...} 패턴 찾기
-                                item_pattern = r"\{'productName':\s*'([^']+)',\s*'quantity':\s*(\d+)[^}]*\}"
+                                item_pattern = r"\{'품명':\s*'([^']+)',\s*'수량':\s*(\d+)[^}]*\}"
                                 item_matches = re.findall(item_pattern, items_str)
                                 
                                 for product_name, quantity in item_matches:
                                     items.append({
-                                        'productName': product_name,
-                                        'quantity': int(quantity)
+                                        '품명': product_name,
+                                        '수량': int(quantity)
                                     })
                                 
                                 data = {'품목': items}
@@ -1020,8 +1117,8 @@ class ReceiptManagementView(APIView):
             # 품목명과 갯수를 문자열로 포맷팅
             formatted_items = []
             for item in items:
-                product_name = item.get('productName', '')
-                quantity = item.get('quantity', 1)
+                product_name = item.get('품명', '')
+                quantity = item.get('수량', 1)
                 if product_name:
                     formatted_items.append(f"{product_name} x{quantity}")
             
@@ -1320,4 +1417,337 @@ class ReceiptPreviewView(APIView):
             return Response({
                 'success': False,
                 'message': '영수증 미리보기 중 오류 발생'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+class AdminReceiptsDownloadView(APIView):
+    """
+    관리자용 영수증 목록 Excel 다운로드 API
+    GET /api/admin/receipts/download
+    """
+    authentication_classes = []  # 커스텀 JWT 인증 사용
+    permission_classes = []
+
+    def get(self, request):
+        print("DEBUG: AdminReceiptsDownloadView.get() 메서드 호출됨")
+
+        # --- 1) Authorization 헤더 확인 ---
+        auth_header = request.headers.get('Authorization')
+        print(f"DEBUG: Authorization 헤더: {auth_header}")
+
+        if not auth_header:
+            print("DEBUG: 토큰 없음")
+            return Response({
+                'success': False,
+                'message': '인증 토큰이 필요합니다.',
+                'error': 'MISSING_TOKEN'
+            }, status=status.HTTP_401_UNAUTHORIZED)
+
+        try:
+            token_type, token = auth_header.split(' ')
+            print(f"DEBUG: 토큰 타입={token_type}, 토큰 앞부분={token[:20]}...")
+            if token_type.lower() != 'bearer':
+                print("DEBUG: 잘못된 토큰 타입")
+                return Response({
+                    'success': False,
+                    'message': '올바른 토큰 형식이 아닙니다.',
+                    'error': 'INVALID_TOKEN_FORMAT'
+                }, status=status.HTTP_401_UNAUTHORIZED)
+        except ValueError:
+            print("DEBUG: 토큰 파싱 실패")
+            return Response({
+                'success': False,
+                'message': '토큰 형식이 올바르지 않습니다.',
+                'error': 'INVALID_TOKEN_FORMAT'
+            }, status=status.HTTP_401_UNAUTHORIZED)
+
+        # --- 2) 토큰 검증 ---
+        payload = verify_token(token)
+        print(f"DEBUG: verify_token 결과: {payload}")
+
+        if not payload:
+            print("DEBUG: 토큰 검증 실패")
+            return Response({
+                'success': False,
+                'message': '토큰이 만료되었거나 유효하지 않습니다.',
+                'error': 'INVALID_TOKEN'
+            }, status=status.HTTP_401_UNAUTHORIZED)
+
+        user_id = payload.get('user_id')
+        print(f"DEBUG: 추출된 user_id: {user_id}")
+
+        if not user_id:
+            return Response({
+                'success': False,
+                'message': '사용자 정보를 찾을 수 없습니다.',
+                'error': 'USER_NOT_FOUND'
+            }, status=status.HTTP_401_UNAUTHORIZED)
+
+        # --- 3) 관리자 권한 확인 ---
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("""
+                    SELECT auth FROM user_info 
+                    WHERE user_id = %s AND use_yn = 'Y'
+                """, [user_id])
+                user_data = cursor.fetchone()
+                print(f"DEBUG: DB 조회 결과: {user_data}")
+
+                if not user_data:
+                    return Response({
+                        'success': False,
+                        'message': '사용자를 찾을 수 없습니다.',
+                        'error': 'USER_NOT_FOUND'
+                    }, status=status.HTTP_401_UNAUTHORIZED)
+
+                if user_data[0] != 'Y':
+                    return Response({
+                        'success': False,
+                        'message': '관리자 권한이 필요합니다.',
+                        'error': 'ADMIN_REQUIRED'
+                    }, status=status.HTTP_403_FORBIDDEN)
+
+                print("DEBUG: 관리자 권한 확인 성공")
+
+        except Exception as e:
+            print(f"DEBUG: 사용자 권한 확인 중 오류: {e}")
+            logger.error(f"사용자 권한 확인 중 오류: {e}")
+            return Response({
+                'success': False,
+                'message': '사용자 권한 확인 중 오류가 발생했습니다.',
+                'error': 'PERMISSION_CHECK_ERROR'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        # --- 4) Excel 생성 및 응답 ---
+        try:
+            start_date = request.GET.get('start_date')
+            end_date = request.GET.get('end_date')
+            name_filter = request.GET.get('name')
+            dept_filter = request.GET.get('dept')
+
+            base_query = """
+                SELECT
+                    u.dept,
+                    u.name,
+                    r.amount,
+                    r.extracted_text,
+                    r.created_at
+                FROM receipt_info r
+                JOIN user_info u ON r.user_id = u.user_id
+                JOIN file_info f ON r.file_id = f.file_id
+                WHERE r.status = 'processed'
+            """
+            params = []
+            if start_date:
+                base_query += " AND r.created_at >= %s"
+                params.append(start_date)
+            if end_date:
+                base_query += " AND r.created_at <= %s"
+                params.append(end_date + ' 23:59:59')
+            if name_filter:
+                base_query += " AND u.name ILIKE %s"
+                params.append(f'%{name_filter}%')
+            if dept_filter:
+                base_query += " AND u.dept ILIKE %s"
+                params.append(f'%{dept_filter}%')
+            base_query += " ORDER BY r.created_at DESC"
+
+            with connection.cursor() as cursor:
+                cursor.execute(base_query, params)
+                receipts = cursor.fetchall()
+
+            # 엑셀 생성
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "Receipts"
+            headers = [
+                "부서", "이름", "금액", "추출데이터", "업로드일시"
+            ]
+            ws.append(headers)
+
+            # 부서(A), 이름(B) 컬럼 너비 직접 지정
+            ws.column_dimensions['A'].width = 10  # 부서
+            ws.column_dimensions['B'].width = 10  # 이름
+
+            for i, receipt in enumerate(receipts):
+                # file_url = generate_s3_public_url(receipt[5]) if receipt[5] else ""
+                print(f"DEBUG: receipt[{i}] 길이: {len(receipt)}, 내용: {receipt}")
+                ws.append([
+                    receipt[0] or '',
+                    receipt[1] or '',
+                    float(receipt[2]) if receipt[2] else 0,
+                    receipt[3] or '',
+                    receipt[4].isoformat() if receipt[4] else ''
+                ])
+
+            # 컬럼 너비 자동 조정
+            for col in ws.columns:
+                max_length = 0
+                column = col[0].column_letter
+                for cell in col:
+                    try:
+                        if cell.value:
+                            max_length = max(max_length, len(str(cell.value)))
+                    except:
+                        pass
+
+                if column not in ['A', 'B']:
+                    ws.column_dimensions[column].width = max_length + 2
+
+            # 메모리 버퍼에 저장
+            output = io.BytesIO()
+            wb.save(output)
+            output.seek(0)
+
+            filename = f"admin_receipts_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+            response = HttpResponse(
+                output.getvalue(),
+                content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            )
+            response['Content-Disposition'] = f'attachment; filename="{filename}"'
+            return response
+
+        except Exception as e:
+            logger.error(f"영수증 Excel 다운로드 오류: {e}")
+            logger.error(traceback.format_exc())
+            return Response({
+                'success': False,
+                'message': '영수증 Excel 다운로드 중 오류가 발생했습니다.',
+                'error': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class ChatReportFeedbackView(APIView):
+    """
+    채팅 신고 피드백 저장 API
+    POST /api/admin/chat-reports/{chat_id}/feedback
+    """
+    authentication_classes = []
+    permission_classes = []
+    
+    def post(self, request, chat_id):
+        try:
+            # Authorization 헤더에서 토큰 추출
+            auth_header = request.headers.get('Authorization')
+            if not auth_header:
+                return Response({
+                    'success': False,
+                    'message': '인증 토큰이 필요합니다.',
+                    'error': 'MISSING_TOKEN'
+                }, status=status.HTTP_401_UNAUTHORIZED)
+            
+            try:
+                token_type, token = auth_header.split(' ')
+                if token_type.lower() != 'bearer':
+                    return Response({
+                        'success': False,
+                        'message': '올바른 토큰 형식이 아닙니다.',
+                        'error': 'INVALID_TOKEN_FORMAT'
+                    }, status=status.HTTP_401_UNAUTHORIZED)
+            except ValueError:
+                return Response({
+                    'success': False,
+                    'message': '토큰 형식이 올바르지 않습니다.',
+                    'error': 'INVALID_TOKEN_FORMAT'
+                }, status=status.HTTP_401_UNAUTHORIZED)
+            
+            # 토큰 검증
+            payload = verify_token(token)
+            if not payload:
+                return Response({
+                    'success': False,
+                    'message': '토큰이 만료되었거나 유효하지 않습니다.',
+                    'error': 'INVALID_TOKEN'
+                }, status=status.HTTP_401_UNAUTHORIZED)
+            
+            # 관리자 권한 확인
+            user_id = payload.get('user_id')
+            if not user_id:
+                return Response({
+                    'success': False,
+                    'message': '사용자 정보를 찾을 수 없습니다.',
+                    'error': 'USER_NOT_FOUND'
+                }, status=status.HTTP_401_UNAUTHORIZED)
+            
+            with connection.cursor() as cursor:
+                cursor.execute("""
+                    SELECT auth FROM user_info 
+                    WHERE user_id = %s AND use_yn = 'Y'
+                """, [user_id])
+                
+                user_data = cursor.fetchone()
+                if not user_data or user_data[0] != 'Y':
+                    return Response({
+                        'success': False,
+                        'message': '관리자 권한이 필요합니다.',
+                        'error': 'ADMIN_REQUIRED'
+                    }, status=status.HTTP_403_FORBIDDEN)
+            
+            # 피드백 내용과 관리자 신고 유형 추출
+            remark = request.data.get('remark')
+            admin_error_type = request.data.get('admin_error_type')
+            
+            if not remark or not remark.strip():
+                return Response({
+                    'success': False,
+                    'message': '피드백 내용을 입력해주세요.',
+                    'error': 'EMPTY_FEEDBACK'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            if not admin_error_type:
+                return Response({
+                    'success': False,
+                    'message': '관리자 판단 신고 유형을 선택해주세요.',
+                    'error': 'EMPTY_ADMIN_ERROR_TYPE'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # chat_report 테이블에서 해당 chat_id의 레코드 찾기
+            with connection.cursor() as cursor:
+                cursor.execute("""
+                    SELECT report_id FROM chat_report 
+                    WHERE chat_id = %s
+                """, [chat_id])
+                
+                report_data = cursor.fetchone()
+                if not report_data:
+                    return Response({
+                        'success': False,
+                        'message': '해당 채팅 신고를 찾을 수 없습니다.',
+                        'error': 'REPORT_NOT_FOUND'
+                    }, status=status.HTTP_404_NOT_FOUND)
+                
+                report_id = report_data[0]
+                
+                # remark와 error_type 컬럼 업데이트 (관리자 판단으로 변경)
+                cursor.execute("""
+                    UPDATE chat_report 
+                    SET remark = %s, 
+                        error_type = %s,
+                        created_at = CURRENT_TIMESTAMP
+                    WHERE report_id = %s
+                """, [remark.strip(), admin_error_type, report_id])
+                
+                if cursor.rowcount == 0:
+                    return Response({
+                        'success': False,
+                        'message': '피드백 업데이트에 실패했습니다.',
+                        'error': 'UPDATE_FAILED'
+                    }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+                
+                return Response({
+                    'success': True,
+                    'message': '피드백이 성공적으로 저장되었습니다.',
+                    'data': {
+                        'report_id': str(report_id),
+                        'chat_id': str(chat_id),
+                        'remark': remark.strip(),
+                        'error_type': admin_error_type
+                    }
+                }, status=status.HTTP_200_OK)
+                
+        except Exception as e:
+            logger.error(f"피드백 저장 중 오류: {str(e)}")
+            return Response({
+                'success': False,
+                'message': '피드백 저장 중 오류가 발생했습니다.',
+                'error': str(e)
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

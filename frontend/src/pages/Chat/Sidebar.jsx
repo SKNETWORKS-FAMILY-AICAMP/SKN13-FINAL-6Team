@@ -10,6 +10,7 @@ import api from "../../services/api";
 function Sidebar({
   userName,
   chats,
+  receipts,
   onNewChat,
   onNewReceipt,
   onSelectChat,
@@ -20,8 +21,8 @@ function Sidebar({
   onSelectCategory,
   selectedCategory,
   selectedChatId,
+  selectedReceiptId,
   onDeleteChat,
-  onDeleteReceipt,
   isNewChatLocked,
   isAdmin,
   onAdminPageClick,
@@ -30,7 +31,7 @@ function Sidebar({
   const displayName = userName || "사용자";
 
   const [openDeleteMenuId, setOpenDeleteMenuId] = useState(null);
-  const [isDeleting, setIsDeleting] = useState(false); // 삭제 중 상태
+  const [isDeleting, setIsDeleting] = useState(false);
 
   const menuRef = useRef(null);
   const listRef = useRef(null);
@@ -62,14 +63,6 @@ function Sidebar({
     } else {
       onNewReceipt();
     }
-  };
-
-  const handleSelectChat = (chat) => {
-    onSelectChat(chat);
-  };
-
-  const handleSelectReceipt = (receipt) => {
-    onSelectReceipt(receipt);
   };
 
   const handleToggleDeleteMenu = (chatId, e) => {
@@ -132,13 +125,14 @@ function Sidebar({
       {/* LoadingMask */}
       <LoadingMask isVisible={isDeleting} message="채팅을 삭제하는 중..." />
 
-      <div className="flex flex-col w-64 h-screen bg-gray-800 text-white">
+      <div className="flex flex-col w-72 h-screen bg-gray-800 text-white">
         {/* 상단 로고 */}
         <div
           className="flex items-center justify-center h-16 border-b border-gray-700 cursor-pointer"
           onClick={() => window.location.reload()}
         >
-          <h1 className="text-xl font-bold">NAVI</h1>
+          {/* <h1 className="text-xl font-bold">NAVI</h1> */}
+          <img src="/images/logo3.png" alt="NAVI Logo" className="h-28 mr-3" />
         </div>
 
         {/* 카테고리 메뉴 */}
@@ -162,7 +156,7 @@ function Sidebar({
         </div>
 
         {/* 새 채팅 + 목록 */}
-        <div className="p-4 border-t border-gray-700 flex-1 flex flex-col min-h-0">
+        <div className="px-2 py-4 border-t border-gray-700 flex-1 flex flex-col min-h-0">
           <button
             type="button"
             onClick={handleAddNewItem}
@@ -180,79 +174,108 @@ function Sidebar({
           </button>
 
           {isLoading ? (
-            // 로딩 중일 때
             <div className="flex justify-center items-center h-full text-gray-400">
               <ArrowPathIcon className="h-6 w-6 animate-spin" />
             </div>
           ) : (
-            // 로딩이 끝났을 때
-            <div ref={listRef} className="max-h-96 overflow-y-auto">
+            <div ref={listRef} className="overflow-y-auto">
               <ul>
-                {chats.map((chat, index) => {
-                  const isSelected = selectedChatId === chat.id;
-                  const isLastItem = index === chats.length - 1;
+                {isChatCategory
+                  ? chats.map((chat, index) => {
+                      const isSelected = selectedChatId === chat.id;
+                      const isLastItem = index === chats.length - 1;
 
-                  return (
-                    <li
-                      key={chat.id}
-                      className={`relative ${
-                        openDeleteMenuId === chat.id || isSelected
-                          ? "bg-gray-700 rounded-md"
-                          : ""
-                      }`}
-                    >
-                      <button
-                        type="button"
-                        onClick={() =>
-                          isChatCategory
-                            ? handleSelectChat(chat)
-                            : handleSelectReceipt(chat)
-                        }
-                        className="w-full text-left block px-4 py-2 text-gray-300 rounded-md hover:bg-gray-700 hover:text-white transition truncate"
-                        title={chat.title}
-                      >
-                        {chat.title}
-                      </button>
-
-                      <div className="absolute top-0 right-0 h-full flex items-center">
-                        <div
-                          className="relative"
-                          ref={openDeleteMenuId === chat.id ? menuRef : null}
+                      return (
+                        <li
+                          key={chat.id}
+                          className={`relative mr-1 ${
+                            openDeleteMenuId === chat.id || isSelected
+                              ? "bg-gray-700 rounded-md"
+                              : ""
+                          }`}
                         >
                           <button
-                            onClick={(e) => {
-                              handleToggleDeleteMenu(chat.id, e);
-                            }}
-                            className="px-2 text-gray-400 hover:text-white focus:outline-none"
+                            type="button"
+                            onClick={() => onSelectChat(chat)}
+                            className="w-full text-left block px-4 py-2 text-gray-300 rounded-md hover:bg-gray-700 hover:text-white transition truncate"
+                            title={chat.title}
                           >
-                            <EllipsisVerticalIcon className="w-5 h-5" />
+                            {chat.title}
                           </button>
 
-                          {/* 드롭다운 메뉴 (삭제 버튼) */}
-                          {openDeleteMenuId === chat.id && (
+                          <div className="absolute top-0 right-0 h-full flex items-center">
                             <div
-                              className={`absolute ${
-                                isLastItem ? "bottom-8" : "mt-1"
-                              } right-2 z-10 bg-gray-600 hover:bg-gray-700 rounded-md shadow-lg min-w-16`}
+                              className="relative"
+                              ref={
+                                openDeleteMenuId === chat.id ? menuRef : null
+                              }
                             >
                               <button
-                                onClick={() => handleDelete(chat.id)}
-                                disabled={isDeleting}
-                                className={`w-full text-left px-4 py-2 text-sm text-white transition ${
-                                  isDeleting
-                                    ? "opacity-50 cursor-not-allowed"
-                                    : "hover:bg-gray-700"
-                                }`}
+                                onClick={(e) => {
+                                  handleToggleDeleteMenu(chat.id, e);
+                                }}
+                                className="px-2 text-gray-400 hover:text-white focus:outline-none"
                               >
-                                {isDeleting ? "삭제 중..." : "삭제"}
+                                <EllipsisVerticalIcon className="w-5 h-5" />
                               </button>
+
+                              {/* 드롭다운 메뉴 (삭제 버튼) */}
+                              {openDeleteMenuId === chat.id && (
+                                <div
+                                  className={`absolute ${
+                                    isLastItem ? "bottom-8" : "mt-1"
+                                  } right-2 z-10 bg-gray-600 hover:bg-gray-700 rounded-md shadow-lg min-w-16`}
+                                >
+                                  <button
+                                    onClick={() => handleDelete(chat.id)}
+                                    disabled={isDeleting}
+                                    className={`w-full text-left px-4 py-2 text-sm text-white transition ${
+                                      isDeleting
+                                        ? "opacity-50 cursor-not-allowed"
+                                        : "hover:bg-gray-700"
+                                    }`}
+                                  >
+                                    {isDeleting ? "삭제 중..." : "삭제"}
+                                  </button>
+                                </div>
+                              )}
                             </div>
-                          )}
-                        </div>
-                      </div>
-                    </li>
-                  );
-                })}
+                          </div>
+                        </li>
+                      );
+                    })
+                  : receipts.map((receipt, index) => {
+                      const isSelected =
+                        selectedReceiptId === receipt.receipt_id;
+                      return (
+                        <li
+                          key={receipt.receipt_id || index}
+                          className={`relative mr-1 ${
+                            isSelected ? "bg-gray-700 rounded-md" : ""
+                          }`}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => onSelectReceipt(receipt)}
+                            className="w-full text-left block px-4 py-2 text-gray-300 rounded-md hover:bg-gray-700 hover:text-white transition truncate"
+                            title={receipt.created_at}
+                          >
+                            {receipt.created_at
+                              ? new Date(receipt.created_at).toLocaleString(
+                                  "ko-KR",
+                                  {
+                                    year: "numeric",
+                                    month: "2-digit",
+                                    day: "2-digit",
+                                    hour: "2-digit",
+                                    minute: "2-digit",
+                                  }
+                                )
+                              : "새 영수증"}
+                          </button>
+                        </li>
+                      );
+                    })}
               </ul>
             </div>
           )}
@@ -264,7 +287,7 @@ function Sidebar({
             <button
               type="button"
               onClick={onAdminPageClick}
-              className="w-full py-2 px-4 rounded-md bg-blue-600 hover:bg-blue-700 text-white text-center font-medium transition flex items-center justify-center gap-2"
+              className="w-full py-2 px-4 text-white text-center font-medium underline hover:text-gray-400 transition"
               title="관리자 페이지로 이동"
             >
               관리자 페이지
@@ -283,7 +306,7 @@ function Sidebar({
                 <button
                   type="button"
                   onClick={onUserNameClick}
-                  className="text-m font-bold truncate hover:text-blue-300 transition cursor-pointer"
+                  className="text-m font-bold truncate hover:text-gray-400 transition cursor-pointer"
                   title="마이페이지로 이동"
                 >
                   {displayName}

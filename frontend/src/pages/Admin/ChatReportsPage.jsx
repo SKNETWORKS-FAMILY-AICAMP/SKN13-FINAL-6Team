@@ -1,10 +1,9 @@
 import React, { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-
-import dayjs from "dayjs";
+import ReactMarkdown from "react-markdown";
 import AdminSidebar from "./components/AdminSidebar.jsx";
 import SearchBar from "./components/SearchBar";
-import DataTable from "./components/DataTable";
+// DataTable는 카드 UI로 대체됩니다
 import Pagination from "./components/Pagination";
 import DateSelectBar from "./components/DateSelectBar";
 import { authService } from "../../services/authService";
@@ -25,6 +24,7 @@ function ChatReportsPage() {
   // 채팅 데이터 상태
   const [chatData, setChatData] = useState([]);
   const [totalPages, setTotalPages] = useState(1);
+  const [totalCount, setTotalCount] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -42,6 +42,63 @@ function ChatReportsPage() {
     }
   }, []);
 
+  // 날짜 필터 변경 시 자동 검색
+  useEffect(() => {
+    // 날짜가 변경되었을 때만 실행
+    if (startDate || endDate) {
+      // 약간의 지연을 두어 상태 업데이트가 완료된 후 검색 실행
+      const timer = setTimeout(async () => {
+        try {
+          // 데이터를 미리 로드
+          const params = new URLSearchParams();
+          params.append("page", "1");
+          params.append("page_size", "8");
+          
+          if (startDate) {
+            params.append("start_date", startDate);
+          }
+          if (endDate) {
+            params.append("end_date", endDate);
+          }
+          
+          // 검색 조건 처리
+          const trimmedSearchTerm = searchTerm.trim();
+          if (trimmedSearchTerm) {
+            if (searchType === 'dept') {
+              params.append("dept", trimmedSearchTerm);
+            } else if (searchType === 'name') {
+              params.append("name", trimmedSearchTerm);
+            } else if (searchType === 'rank') {
+              params.append("rank", trimmedSearchTerm);
+            } else if (searchType === 'error_type') {
+              params.append("error_type", trimmedSearchTerm);
+            } else if (searchType === 'reason') {
+              params.append("reason", trimmedSearchTerm);
+            } else if (searchType === 'remark') {
+              params.append("remark", trimmedSearchTerm);
+            }
+          }
+          
+          const response = await api.get(`/admin/conversations/reports/?${params.toString()}`);
+          
+          if (response.data.success) {
+            // 깜빡임 완전 방지: React 18의 배치 업데이트 활용
+            React.startTransition(() => {
+              setChatData(response.data.data.reports);
+              setTotalPages(response.data.data.total_pages);
+              setTotalCount(response.data.data.total_count || 0);
+              setCurrentPage(1);
+            });
+          }
+        } catch (error) {
+          console.error("날짜 필터 검색 실패:", error);
+        }
+      }, 100);
+      
+      return () => clearTimeout(timer);
+    }
+  }, [startDate, endDate, searchTerm, searchType]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // 사용자 정보 로드
   const loadUserInfo = async () => {
     try {
@@ -54,7 +111,7 @@ function ChatReportsPage() {
     }
   };
 
-  const fetchChatReports = async (page = 1) => {
+  const fetchChatReports = useCallback(async (page = 1, showLoading = true) => {
     try {
       // 토큰 체크
       // const token = localStorage.getItem("access_token");
@@ -63,12 +120,14 @@ function ChatReportsPage() {
       //   return;
       // }
 
+      if (showLoading) {
       setIsLoading(true);
+      }
       setError("");
 
       const params = new URLSearchParams();
       params.append("page", page.toString());
-      params.append("page_size", "10");
+      params.append("page_size", "8");
 
       if (startDate) {
         params.append("start_date", startDate);
@@ -93,7 +152,7 @@ function ChatReportsPage() {
           params.append("reason", trimmedSearchTerm);
         } else if (searchType === 'remark') {
           params.append("remark", trimmedSearchTerm);
-        }
+        } 
       }
       
       const response = await api.get(`/admin/conversations/reports/?${params.toString()}`);
@@ -102,6 +161,7 @@ function ChatReportsPage() {
         // 백엔드 검색 결과 사용
         setChatData(response.data.data.reports);
         setTotalPages(response.data.data.total_pages);
+        setTotalCount(response.data.data.total_count || 0);
         setCurrentPage(page);
       } else {
         throw new Error(response.data.message || 'API 응답 오류');
@@ -112,129 +172,34 @@ function ChatReportsPage() {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [startDate, endDate, searchTerm, searchType]);
 
-  const columns = [
-    {
-      header: "부서",
-      accessor: "dept",
-      cell: (value) => value || "정보 없음"
-    },
-    {
-      header: "이름",
-      accessor: "name",
-      cell: (value) => value || "정보 없음"
-    },
-    {
-      header: "직급",
-      accessor: "rank",
-      cell: (value) => value || "정보 없음"
-    },
-    {
-      header: "사용자 입력",
-      accessor: "user_input",
-      cell: (value) => value || "정보 없음"
-    },
-    {
-      header: "LLM 응답",
-      accessor: "llm_response",
-      cell: (value) => value || "정보 없음"
-    },
-    {
-      header: "대화 날짜",
-      accessor: "chat_date",
-      cell: (value) => {
-        if (!value) return "정보 없음";
-        const date = new Date(value);
-        return date.toLocaleString('ko-KR', {
-          year: 'numeric',
-          month: '2-digit',
-          day: '2-digit',
-          hour: '2-digit',
-          minute: '2-digit'
-        });
-      }
-    },
-    {
-      header: "신고 유형",
-      accessor: "error_type",
-      cell: (value) => {
-        const errorTypeMap = {
-          'hallucination': '환각',
-          'fact_error': '사실 오류',
-          'irrelevant': '관련 없음',
-          'incomplete': '불완전',
-          'other': '기타'
-        };
-        return errorTypeMap[value] || value || "정보 없음";
-      }
-    },
-    {
-      header: "신고 사유",
-      accessor: "reason",
-      cell: (value) => value || "정보 없음"
-    },
-    {
-      header: "신고 일시",
-      accessor: "reported_at",
-      cell: (value) => {
-        if (!value) return "정보 없음";
-        const date = new Date(value);
-        return date.toLocaleString('ko-KR', {
-          year: 'numeric',
-          month: '2-digit',
-          day: '2-digit',
-          hour: '2-digit',
-          minute: '2-digit'
-        });
-      }
-    },
-    {
-      header: "비고",
-      accessor: "remark",
-      cell: (value, row) => {
-        if (value && value.trim()) {
-          return (
-            <button
-              onClick={() => handleViewFeedback(row.chat_id, value)}
-              className="text-blue-600 hover:text-blue-800 underline cursor-pointer"
-            >
-              피드백 보기
-            </button>
-          );
-        } else {
-          return (
-            <button
-              onClick={() => handleWriteFeedback(row.chat_id)}
-              className="text-green-600 hover:text-green-800 underline cursor-pointer"
-            >
-              피드백 작성
-            </button>
-          );
-        }
-      }
-    },
-  ];
+  // 테이블 컬럼은 카드 UI로 대체
 
   const [isFeedbackModalOpen, setIsFeedbackModalOpen] = useState(false);
   const [selectedChatId, setSelectedChatId] = useState(null);
   const [feedbackContent, setFeedbackContent] = useState("");
   const [feedbackMode, setFeedbackMode] = useState("");
   const [currentFeedback, setCurrentFeedback] = useState("");
+  const [selectedReport, setSelectedReport] = useState(null);
+  const [adminErrorType, setAdminErrorType] = useState("");
 
-  // 피드백 보기 핸들러
-  const handleViewFeedback = (chatId, feedback) => {
-    setSelectedChatId(chatId);
-    setCurrentFeedback(feedback);
-    setFeedbackMode("view");
-    setIsFeedbackModalOpen(true);
-  };
+  // 피드백 보기/작성 핸들러는 카드 클릭으로 통합됨
 
-  // 피드백 작성 핸들러
-  const handleWriteFeedback = (chatId) => {
-    setSelectedChatId(chatId);
-    setFeedbackContent("");
-    setFeedbackMode("write");
+  // 카드 클릭 시 상세 보기 모달 오픈
+  const openReportDetail = (report) => {
+    setSelectedReport(report);
+    setSelectedChatId(report?.chat_id || report?.id || null);
+    setAdminErrorType(report?.error_type || "");
+    const remark = (report?.remark || "").trim();
+    if (remark) {
+      setCurrentFeedback(remark);
+      setFeedbackMode("view");
+    } else {
+      setCurrentFeedback("");
+      setFeedbackContent("");
+      setFeedbackMode("write");
+    }
     setIsFeedbackModalOpen(true);
   };
 
@@ -245,15 +210,32 @@ function ChatReportsPage() {
         return;
       }
 
-      const response = await api.post(`/admin/chat-reports/${selectedChatId}/feedback`, {
-        remark: feedbackContent.trim()
+      if (!adminErrorType) {
+        alert("관리자 판단 신고 유형을 선택해주세요.");
+        return;
+      }
+
+      const response = await api.post(`/admin/chat-reports/${selectedChatId}/feedback/`, {
+        remark: feedbackContent.trim(),
+        admin_error_type: adminErrorType
       });
 
       if (response.data.success) {
         alert("피드백이 성공적으로 저장되었습니다.");
         setIsFeedbackModalOpen(false);
-        // 테이블 데이터 새로고침
-        fetchChatReports(currentPage);
+        
+        // 해당 카드의 데이터만 업데이트
+        setChatData(prevData => 
+          prevData.map(report => 
+            report.chat_id === selectedChatId 
+              ? {
+                  ...report,
+                  error_type: adminErrorType,
+                  remark: feedbackContent.trim()
+                }
+              : report
+          )
+        );
       } else {
         alert("피드백 저장에 실패했습니다.");
       }
@@ -261,6 +243,15 @@ function ChatReportsPage() {
       console.error("피드백 저장 실패:", error);
       alert("피드백 저장 중 오류가 발생했습니다.");
     }
+  };
+
+  const handleEditFeedback = () => {
+    setFeedbackContent(currentFeedback);
+    setFeedbackMode("write");
+  };
+
+  const handleEditErrorType = () => {
+    setFeedbackMode("write");
   };
   
   // 피드백 모달 달기
@@ -270,24 +261,19 @@ function ChatReportsPage() {
     setFeedbackContent("");
     setCurrentFeedback("");
     setFeedbackMode("");
+    setAdminErrorType("");
+    setSelectedReport(null);
   };
 
-          const searchOptions = [
-            { value: "dept", label: "부서명" },
-            { value: "name", label: "이름" },
-            { value: "rank", label: "직급" },
-            { value: "error_type", label: "신고 유형" },
+  const searchOptions = [
+    { value: "dept", label: "부서명" },
+    { value: "name", label: "이름" },
+    { value: "rank", label: "직급" },
+    { value: "error_type", label: "신고 유형" },
             { value: "remark", label: "비고" }
         ];
 
-        // 신고 유형 한글-영어 매핑
-        const errorTypeMapping = {
-            "불완전": "incomplete",
-            "환각": "hallucination",
-            "사실 오류": "fact_error", 
-            "무관련": "irrelevant",
-            "기타": "other"
-        };
+
 
         // 신고 유형 선택 옵션 (한국어)
         const errorTypeOptions = [
@@ -296,17 +282,26 @@ function ChatReportsPage() {
             { value: "사실 오류", label: "사실 오류" },
             { value: "무관련", label: "무관련" },
             { value: "기타", label: "기타" }
-        ];
+  ];
 
   const handleDateChange = (start, end) => {
+    // 날짜 유효성 검사
+    if (start && end && start > end) {
+      alert("시작일은 종료일보다 이전이어야 합니다.");
+      return;
+    }
+    
     setStartDate(start);
     setEndDate(end);
+    // 날짜 변경 시 1페이지부터 검색 시작
+    setCurrentPage(1);
     fetchChatReports(1);
   };
 
-     const handleSearch = () => {
-    if (!searchTerm.trim()) {
-      alert("검색어를 입력해주세요.");
+   const handleSearch = () => {
+    // 검색어가 없어도 날짜 필터가 있으면 검색 가능
+    if (!searchTerm.trim() && !startDate && !endDate) {
+      alert("검색어 또는 날짜를 입력해주세요.");
       return;
     }
     
@@ -317,6 +312,14 @@ function ChatReportsPage() {
   const handleClearSearch = () => {
     setSearchTerm("");
     setSearchType("dept");
+    setStartDate("");
+    setEndDate("");
+    setCurrentPage(1);
+    fetchChatReports(1);
+  };
+
+  // 날짜 필터만 초기화
+  const handleClearDateFilter = () => {
     setStartDate("");
     setEndDate("");
     setCurrentPage(1);
@@ -355,16 +358,23 @@ function ChatReportsPage() {
   };
 
   return (
-    <div className="flex">
+    <div className="flex h-screen">
+      <div className="w-64 bg-gray-800 text-white flex-shrink-0 h-screen">
       <AdminSidebar 
         userName={userName}
         selectedTab={selectedTab}
         onTabSelect={handleTabSelect}
         onChatPageClick={handleChatPageClick}
       />
-      <div className="flex-1 p-6">
+      </div>
+      <div className="flex-1 overflow-y-auto p-6">
         <h1 className="text-2xl font-bold mb-4">대화 신고 내역</h1>
-        <DateSelectBar />
+        <DateSelectBar 
+          startDate={startDate}
+          endDate={endDate}
+          onDateChange={handleDateChange}
+          onClearDateFilter={handleClearDateFilter}
+        />
         <SearchBar
           searchTerm={searchTerm}
           setSearchTerm={setSearchTerm}
@@ -398,23 +408,93 @@ function ChatReportsPage() {
           <>
             {/* 검색 결과 요약 */}
             <div className="mb-4 p-3 bg-green-50 border border-green-200 rounded-lg">
-              <p className="text-sm text-green-800">
-                총 <span className="font-medium">{chatData.length}</span>건의 신고 내역을 찾았습니다.
-              </p>
+              <div className="flex justify-between items-center">
+                <p className="text-sm text-green-800">
+                  총 <span className="font-medium">{totalCount}</span>건의 신고 내역을 찾았습니다.
+                  {(startDate || endDate) && (
+                    <span className="ml-2 text-green-600">
+                      (기간: {startDate ? new Date(startDate).toLocaleDateString('ko-KR') : '시작일'} ~ {endDate ? new Date(endDate).toLocaleDateString('ko-KR') : '종료일'})
+                    </span>
+                  )}
+                </p>
+                {(startDate || endDate) && (
+                  <button
+                    onClick={handleClearDateFilter}
+                    className="text-xs text-green-600 hover:text-green-800 underline"
+                  >
+                    날짜 필터 초기화
+                  </button>
+                )}
+              </div>
             </div>
             
-            <DataTable columns={columns} data={chatData} />
-            <Pagination
-              currentPage={currentPage}
+            {/* 카드 그리드 렌더링 */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+              {chatData.map((report, index) => {
+                const errorTypeMap = {
+                  'hallucination': '환각',
+                  'fact_error': '사실 오류',
+                  'irrelevant': '관련 없음',
+                  'incomplete': '불완전',
+                  'other': '기타'
+                };
+                const errorTypeKr = errorTypeMap[report?.error_type] || report?.error_type || '정보 없음';
+                const reportedAtText = report?.reported_at
+                  ? new Date(report.reported_at).toLocaleString('ko-KR', {
+                      year: 'numeric', month: '2-digit', day: '2-digit',
+                      hour: '2-digit', minute: '2-digit'
+                    })
+                  : '정보 없음';
+
+                return (
+                  <div
+                    key={`${report.report_id || report.chat_id || 'unknown'}-${index}-${report.reported_at || Date.now()}`}
+                    className="cursor-pointer rounded-xl border border-gray-200 bg-white p-4 shadow hover:shadow-md transition"
+                    onClick={() => openReportDetail(report)}
+                  >
+                    <div className="flex items-start justify-between">
+                      <div className="text-sm text-gray-500">{reportedAtText}</div>
+                      <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${
+                        report?.remark && report.remark.trim() 
+                          ? 'bg-green-100 text-green-700' 
+                          : 'bg-red-100 text-red-700'
+                      }`}>
+                        {errorTypeKr}
+                      </span>
+                    </div>
+                    <div className="mt-3 space-y-1">
+                      <div className="text-sm">
+                        <span className="text-gray-500">부서: </span>
+                        <span className="font-medium">{report?.dept || '정보 없음'}</span>
+                      </div>
+                      <div className="text-sm">
+                        <span className="text-gray-500">직급: </span>
+                        <span className="font-medium">{report?.rank || '정보 없음'}</span>
+                      </div>
+                      <div className="text-sm">
+                        <span className="text-gray-500">이름: </span>
+                        <span className="font-medium">{report?.name || '정보 없음'}</span>
+                      </div>
+                      <div className="text-sm">
+                        <span className="text-gray-500">신고 사유: </span>
+                        <span className="font-medium line-clamp-2">{report?.reason || '정보 없음'}</span>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+        <Pagination
+          currentPage={currentPage}
               totalPages={totalPages}
-              onPageChange={handlePageChange}
-            />
+          onPageChange={handlePageChange}
+        />
           </>
         )}
          {/* 피드백 모달 */}
         {isFeedbackModalOpen && (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-            <div className="bg-white rounded-lg p-6 w-full max-w-2xl max-h-[80vh] overflow-y-auto">
+            <div className="bg-white rounded-lg p-6 w-full max-w-4xl max-h-[85vh] overflow-y-auto">
               {/* 모달 제목 동적 처리 */}
               <div className="flex justify-between items-center mb-4">
                 <h2 className="text-xl font-semibold">
@@ -431,35 +511,141 @@ function ChatReportsPage() {
                 </button>
               </div>
 
-              {feedbackMode === "view" ? (
-                <div>
-                  {currentFeedback ? (
-                    <div>
-                      <p className="text-gray-600 mb-4">피드백 내용:</p>
-                      <div className="bg-gray-50 p-4 rounded-lg border">
-                        <p className="whitespace-pre-wrap">{currentFeedback}</p>
-                      </div>
+              {/* 상세 정보 섹션: 요약 + 본문 + 피드백 */}
+              <div className="space-y-6">
+                {/* 요약 정보 카드 */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="rounded-lg border p-4">
+                    <div className="text-sm text-gray-500">부서</div>
+                    <div className="font-medium">{selectedReport?.dept || '정보 없음'}</div>
+                  </div>
+                  <div className="rounded-lg border p-4">
+                    <div className="text-sm text-gray-500">직급</div>
+                    <div className="font-medium">{selectedReport?.rank || '정보 없음'}</div>
+                  </div>
+                  <div className="rounded-lg border p-4">
+                    <div className="text-sm text-gray-500">이름</div>
+                    <div className="font-medium">{selectedReport?.name || '정보 없음'}</div>
+                  </div>
+                  <div className="rounded-lg border p-4">
+                    <div className="text-sm text-gray-500">신고 일시</div>
+                    <div className="font-medium">
+                      {selectedReport?.reported_at ? new Date(selectedReport.reported_at).toLocaleString('ko-KR', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '정보 없음'}
                     </div>
+                  </div>
+                  
+                  {/* 신고 유형 비교 섹션 */}
+                  <div className="rounded-lg border p-4">
+                    <div className="text-sm text-gray-500 mb-2">사용자 신고 유형</div>
+                    <div className="font-medium text-gray-800">
+                      {(() => {
+                        const map = { hallucination: '환각', fact_error: '사실 오류', irrelevant: '관련 없음', incomplete: '불완전', other: '기타' };
+                        return map[selectedReport?.error_type] || selectedReport?.error_type || '정보 없음';
+                      })()}
+                    </div>
+                  </div>
+                  <div className="rounded-lg border p-4">
+                    <div className="flex justify-between items-start mb-2">
+                      <div className="text-sm text-gray-500">관리자 판단 신고 유형</div>
+                      {feedbackMode === "view" && selectedReport?.remark && (
+                        <button
+                          onClick={handleEditErrorType}
+                          className="text-xs text-blue-600 hover:text-blue-800 underline"
+                        >
+                          수정
+                        </button>
+                      )}
+                    </div>
+                    <div className="font-medium text-blue-600">
+                      {(() => {
+                        const map = { hallucination: '환각', fact_error: '사실 오류', irrelevant: '관련 없음', incomplete: '불완전', other: '기타' };
+                        return map[selectedReport?.error_type] || selectedReport?.error_type || '정보 없음';
+                      })()}
+                    </div>
+                  </div>
+                  
+                  <div className="rounded-lg border p-4 md:col-span-2">
+                    <div className="text-sm text-gray-500">사용자 신고 사유</div>
+                    <div className="font-medium whitespace-pre-wrap">{selectedReport?.reason || '정보 없음'}</div>
+                  </div>
+                  {selectedReport?.remark && (
+                    <div className="rounded-lg border p-4 md:col-span-2">
+                      <div className="text-sm text-gray-500">관리자 판단 사유</div>
+                      <div className="font-medium text-blue-600 whitespace-pre-wrap">{selectedReport?.remark || '정보 없음'}</div>
+                    </div>
+                  )}
+                </div>
+
+                {/* 본문: 사용자 입력 / LLM 응답 */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="rounded-lg border p-4">
+                    <div className="text-sm font-semibold text-gray-700 mb-2">사용자 입력</div>
+                    <div className="whitespace-pre-wrap text-gray-800 min-h-[80px]">{selectedReport?.user_input || '정보 없음'}</div>
+                  </div>
+                  <div className="rounded-lg border p-4">
+                    <div className="text-sm font-semibold text-gray-700 mb-2">LLM 응답</div>
+                    <div className="prose prose-sm max-w-none min-h-[80px]">
+                      <ReactMarkdown>{selectedReport?.llm_response || '정보 없음'}</ReactMarkdown>
+                    </div>
+                  </div>
+                </div>
+
+                                {/* 관리자 판단 신고 유형 선택 */}
+                {feedbackMode === "write" && (
+                  <div className="rounded-lg border p-4">
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      관리자 판단 신고 유형 *
+                    </label>
+                    <select
+                      value={adminErrorType}
+                      onChange={(e) => setAdminErrorType(e.target.value)}
+                      className="w-full border border-gray-300 rounded-lg p-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    >
+                      <option value="">신고 유형을 선택하세요</option>
+                      <option value="hallucination">환각</option>
+                      <option value="fact_error">사실 오류</option>
+                      <option value="irrelevant">관련 없음</option>
+                      <option value="incomplete">불완전</option>
+                      <option value="other">기타</option>
+                    </select>
+                  </div>
+                )}
+
+                {/* 피드백 */}
+                {feedbackMode === "view" ? (
+                  <div className="rounded-lg border p-4">
+                    {currentFeedback ? (
+                      <>
+                        <div className="flex justify-between items-center mb-2">
+                          <div className="text-sm font-semibold text-gray-700">피드백</div>
+                          <button
+                            onClick={handleEditFeedback}
+                            className="text-sm text-blue-600 hover:text-blue-800 underline"
+                          >
+                            수정
+                          </button>
+                        </div>
+                        <div className="bg-gray-50 p-4 rounded-lg border whitespace-pre-wrap">{currentFeedback}</div>
+                      </>
+                    ) : (
+                      <div className="text-center py-8">
+                        <p className="text-gray-500 text-lg">피드백을 입력해주세요.</p>
+                        <p className="text-gray-500 text-sm mt-2">아직 검토가 진행 중입니다.</p>
+                      </div>
+                    )}
+                  </div>
                 ) : (
-                  <div className="text-center py-8">
-                    <p className="text-gray-500 text-lg">피드백을 입력해주세요.</p>
-                    <p className="text-gray-500 text-sm mt-2">아직 검토가 진행 중입니다.</p>
+                  <div className="rounded-lg border p-4">
+                    <label className="block text-sm font-medium text-gray-700 mb-2">피드백 작성</label>
+                    <textarea
+                      value={feedbackContent}
+                      onChange={(e) => setFeedbackContent(e.target.value)}
+                      className="w-full border border-gray-300 rounded-lg resize-none focus:ring-2 focus:ring-blue-500 focus:border-transparent min-h-[120px]"
+                      placeholder="피드백 내용을 입력해주세요..."
+                    />
                   </div>
                 )}
               </div>
-            ) : (
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  피드백 작성
-                </label>
-                <textarea
-                  value={feedbackContent}
-                  onChange={(e) => setFeedbackContent(e.target.value)}
-                  className="w-full border border-gray-300 rounded-lg resize-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  placeholder="피드백 내용을 입력해주세요..."
-                />
-              </div>
-            )}
 
             <div className="flex justify-end space-x-3 mt-6">
               {feedbackMode === "write" && (

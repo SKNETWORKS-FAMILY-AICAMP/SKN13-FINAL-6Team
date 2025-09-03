@@ -19,8 +19,10 @@ services:
     volumes:
       - ./backend:/app
       - ./documents:/app/documents
+      - ./config:/app/prompts
       - static_volume:/app/backend/staticfiles
       - media_volume:/app/backend/mediafiles
+      - /etc/localtime:/etc/localtime:ro
     env_file:
       - ./.env
     environment:
@@ -29,6 +31,7 @@ services:
       - QDRANT_COLLECTION_NAME=regulations_final
       - QDRANT_VECTOR_SIZE=1024
       - RAG_TOP_K=5
+      - TZ=Asia/Seoul
     depends_on:
       - qdrant
     command: python manage.py runserver 0.0.0.0:8000
