@@ -9,7 +9,10 @@ from .models import Conversation, ChatMessage, ChatReport
 from .serializers import ConversationSerializer, ChatMessageSerializer, ChatQuerySerializer, ChatReportSerializer
 from .services.rag_service import rag_answer
 from .services.pipeline import rag_answer_enhanced
-from django.http import JsonResponse
+from django.http import JsonResponse, HttpResponse
+import boto3
+import os
+from botocore.exceptions import ClientError
 import logging
 
 logger = logging.getLogger(__name__)
@@ -28,40 +31,27 @@ class ConversationListView(generics.ListAPIView):
         auth_header = self.request.headers.get('Authorization')
         user_id = None
         
-        print(f"DEBUG: ConversationListView - Authorization 헤더: {auth_header}")
-        
         if auth_header:
             try:
                 token_type, token = auth_header.split(' ')
-                print(f"DEBUG: ConversationListView - 토큰 타입: {token_type}, 토큰: {token[:20]}...")
                 
                 if token_type.lower() == 'bearer':
                     from authapp.utils import verify_token
                     payload = verify_token(token)
-                    print(f"DEBUG: ConversationListView - 토큰 검증 결과: {payload}")
                     
                     if payload:
                         user_id = payload.get('user_id')
-                        print(f"DEBUG: ConversationListView - JWT에서 추출한 user_id: {user_id}")
-                    else:
-                        print(f"DEBUG: ConversationListView - 토큰 검증 실패")
-                else:
-                    print(f"DEBUG: ConversationListView - 잘못된 토큰 타입: {token_type}")
             except Exception as e:
-                print(f"DEBUG: ConversationListView - JWT 파싱 실패: {str(e)}")
-                import traceback
-                print(f"DEBUG: ConversationListView - 상세 오류: {traceback.format_exc()}")
+                pass
         else:
-            print(f"DEBUG: ConversationListView - Authorization 헤더가 없음")
+            pass
         
         if user_id:
             # user_id로 필터링된 대화방만 반환
             queryset = Conversation.objects.filter(user_id=user_id).order_by('-updated_at')
-            print(f"DEBUG: ConversationListView - user_id {user_id}로 필터링된 대화방 수: {queryset.count()}")
             return queryset
         else:
             # user_id가 없으면 빈 쿼리셋 반환
-            print(f"DEBUG: ConversationListView - user_id가 없어 빈 결과 반환")
             return Conversation.objects.none()
 
 class ConversationCreateView(generics.CreateAPIView):
@@ -401,4 +391,76 @@ class ChatReportView(generics.CreateAPIView):
         logger.info(f"✅ serializer.save 완료 [{request_id}] - report_id: {chat_report.report_id}")
 
         return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+class FormDownloadView(generics.GenericAPIView):
+    """
+    서식 파일 다운로드 API
+    """
+    authentication_classes = []  # 인증 클래스 제외
+    permission_classes = [AllowAny]  # 개발 단계에서는 인증 우회
+    
+    def get(self, request, *args, **kwargs):
+        """
+        S3에서 서식 파일을 다운로드하여 반환
+        """
+        s3_key = request.query_params.get('s3_key')
+        
+        if not s3_key:
+            return Response({
+                'success': False,
+                'message': 'S3 키가 제공되지 않았습니다.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            # S3 클라이언트 초기화
+            s3_client = boto3.client(
+                's3',
+                region_name=os.getenv('AWS_REGION', 'ap-northeast-2'),
+                aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
+                aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY')
+            )
+            
+            bucket_name = os.getenv('AWS_S3_BUCKET_NAME', 'companypolicy')
+            
+            # S3에서 파일 다운로드
+            response = s3_client.get_object(Bucket=bucket_name, Key=s3_key)
+            file_content = response['Body'].read()
+            
+            # 파일명 추출 (S3 키에서 마지막 부분)
+            filename = s3_key.split('/')[-1]
+            
+            # 파일 확장자에 따른 Content-Type 설정
+            if filename.lower().endswith('.pdf'):
+                content_type = 'application/pdf'
+            elif filename.lower().endswith('.doc'):
+                content_type = 'application/msword'
+            elif filename.lower().endswith('.docx'):
+                content_type = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+            elif filename.lower().endswith('.xls'):
+                content_type = 'application/vnd.ms-excel'
+            elif filename.lower().endswith('.xlsx'):
+                content_type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            else:
+                content_type = 'application/octet-stream'
+            
+            # HTTP 응답 생성
+            http_response = HttpResponse(file_content, content_type=content_type)
+            http_response['Content-Disposition'] = f'attachment; filename="{filename}"'
+            http_response['Content-Length'] = len(file_content)
+            
+            return http_response
+            
+        except ClientError as e:
+            logger.error(f"S3 파일 다운로드 실패: {e}")
+            return Response({
+                'success': False,
+                'message': '파일을 찾을 수 없거나 다운로드할 수 없습니다.'
+            }, status=status.HTTP_404_NOT_FOUND)
+            
+        except Exception as e:
+            logger.error(f"파일 다운로드 중 오류: {e}")
+            return Response({
+                'success': False,
+                'message': '파일 다운로드 중 오류가 발생했습니다.'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 

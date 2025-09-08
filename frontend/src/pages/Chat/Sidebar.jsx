@@ -129,7 +129,10 @@ function Sidebar({
         {/* 상단 로고 */}
         <div
           className="flex items-center justify-center h-16 border-b border-gray-700 cursor-pointer"
-          onClick={() => window.location.reload()}
+          onClick={() => {
+            sessionStorage.clear();
+            window.location.reload();    
+          }}
         >
           {/* <h1 className="text-xl font-bold">NAVI</h1> */}
           <img src="/images/logo3.png" alt="NAVI Logo" className="h-28 mr-3" />
@@ -306,7 +309,7 @@ function Sidebar({
                 <button
                   type="button"
                   onClick={onUserNameClick}
-                  className="text-m font-bold truncate hover:text-gray-400 transition cursor-pointer"
+                  className="text-base font-bold truncate hover:text-gray-400 transition cursor-pointer"
                   title="마이페이지로 이동"
                 >
                   {displayName}
