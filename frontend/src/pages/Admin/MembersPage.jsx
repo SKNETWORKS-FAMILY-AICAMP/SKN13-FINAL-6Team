@@ -175,6 +175,8 @@ function MembersPage() {
    const handleSearch = () => {
     console.log(`검색 유형: ${searchType}, 검색어: ${searchTerm}`);
    
+
+
     // 검색 필터 구성
     let filter = "";
     if (searchTerm.trim()) {
@@ -226,7 +228,7 @@ function MembersPage() {
 
   return (
     <div className="flex h-screen">
-      <div className="w-64 bg-gray-800 text-white flex-shrink-0 h-screen">
+      <div className="w-72 bg-gray-800 text-white flex-shrink-0 h-screen">
         <AdminSidebar 
         userName={userName}
         selectedTab={selectedTab}

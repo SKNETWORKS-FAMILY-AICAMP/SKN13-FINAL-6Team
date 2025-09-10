@@ -92,15 +92,18 @@ def is_simple_greeting(query: str, openai_api_key: str = None) -> bool:
 - 감사합니다, 고마워요, 땡큐
 - 네, 예, 응, 오케이
 - 짧은 감정 표현 (ㅎㅎ, ㅋㅋ, 우와 등)
+- 자기소개 + 인사말 (나는 ○○팀의 ○○야, 안녕 / 저는 ○○입니다, 안녕하세요)
+- 직책/부서 소개 + 인사말 (회계팀에서 일해요, 안녕 / 개발팀 김○○입니다)
 
 복잡한 업무 질문 예시:
 - 휴가 신청 방법은?
 - 급여 규정이 어떻게 되나요?
 - 회의실 예약은 어떻게 하나요?
 - 프로젝트 관련 문의
+- 구체적인 업무 절차나 정책 문의
 
 답변은 반드시 'YES' 또는 'NO'로만 해주세요.
-- YES: 간단한 인사말/대화
+- YES: 간단한 인사말/대화 (자기소개 포함)
 - NO: 복잡한 업무 질문"""
 
         user_prompt = f"다음 질문을 분석해주세요: '{query}'"
@@ -126,14 +129,15 @@ def is_simple_greeting(query: str, openai_api_key: str = None) -> bool:
         # 오류 시 복잡한 질문으로 처리 (안전한 기본값)
         return False
 
-def answer_query(query: str, openai_api_key: str = None, explicit_domain: str = None) -> Dict[str, Any]:
+def answer_query(query: str, openai_api_key: str = None, explicit_domain: str = None, conversation_history: List[Dict] = None) -> Dict[str, Any]:
     """
-    질문에 대한 완전한 RAG 답변 생성
+    질문에 대한 완전한 RAG 답변 생성 (멀티턴 대화 지원)
     
     Args:
         query: 사용자 질문
         openai_api_key: OpenAI API 키 (선택사항)
         explicit_domain: 명시적 도메인 (선택사항)
+        conversation_history: 대화 히스토리 (선택사항)
     
     Returns:
         답변, 메타데이터, 참고문서를 포함한 딕셔너리
@@ -144,8 +148,15 @@ def answer_query(query: str, openai_api_key: str = None, explicit_domain: str = 
         logger.info(f"RAG 파이프라인 시작 - 질문: {query}")
         print(f"DEBUG: RAG 파이프라인 시작 - 질문: {query}")
         
-        # 🚀 간단한 질문 감지 (간단한 인사말은 빠른 처리)
+        # 🚀 간단한 질문 감지 (간단한 인사말은 대화 히스토리와 관계없이 빠른 처리)
         is_simple_query = is_simple_greeting(query, openai_api_key)
+        
+        if conversation_history and len(conversation_history) > 0:
+            logger.info(f"💬 대화 히스토리 감지 ({len(conversation_history)}개 메시지), 멀티턴 대화로 처리")
+            print(f"DEBUG: 대화 히스토리 감지, 멀티턴 대화로 처리")
+            if not is_simple_query:
+                logger.info("복잡한 질문으로 분류되어 RAG 파이프라인 실행")
+                print(f"DEBUG: 복잡한 질문으로 분류되어 RAG 파이프라인 실행")
         
         if is_simple_query:
             logger.info(f"⚡ 간단한 질문 감지, LLM으로 직접 응답 생성: {query}")
@@ -160,27 +171,36 @@ def answer_query(query: str, openai_api_key: str = None, explicit_domain: str = 
                 else:
                     client = openai.OpenAI(api_key=api_key)
                     
-                    simple_response_prompt = f"""사용자가 간단한 인사말이나 짧은 대화를 했습니다: "{query}"
-
-다음 역할을 수행해주세요:
-- 한국인터넷진흥원(KISA)의 업무 가이드 챗봇으로서 친근하고 전문적으로 응답
-- 사용자의 톤에 맞춰 자연스럽게 인사
-- 업무 관련 도움을 제공할 준비가 되어 있음을 알림
-- 2-3문장으로 간결하게 작성
-
-예시:
-- "안녕" → "안녕하세요! 업무 관련 궁금한 사항이 있으시면 언제든 문의해 주세요."
-- "좋은 아침" → "좋은 아침입니다! 오늘도 업무에 도움이 되는 정보를 제공해드리겠습니다."
-- "고마워" → "천만에요! 다른 궁금한 사항이 있으시면 언제든 말씀해 주세요."
-"""
+                    # 대화 히스토리를 고려한 간단한 응답 생성
+                    messages = []
+                    
+                    # 시스템 프롬프트 추가
+                    system_prompt = """당신은 한국인터넷진흥원(KISA)의 업무 가이드 챗봇입니다.
+사용자의 간단한 인사말이나 짧은 대화에 친근하고 전문적으로 응답하세요.
+자기소개가 포함된 경우 해당 정보를 인정하고 반응하세요.
+업무 관련 도움을 제공할 준비가 되어 있음을 알려주세요.
+2-3문장으로 간결하게 작성하세요."""
+                    
+                    messages.append({"role": "system", "content": system_prompt})
+                    
+                    # 대화 히스토리가 있으면 추가
+                    if conversation_history and len(conversation_history) > 0:
+                        for msg in conversation_history:
+                            if isinstance(msg, dict) and "role" in msg and "content" in msg:
+                                role = msg.get("role", "user")
+                                if role in ["user", "assistant"]:
+                                    content = str(msg.get("content", ""))[:1000]  # 길이 제한
+                                    if content.strip():
+                                        messages.append({"role": role, "content": content})
+                    
+                    # 현재 사용자 입력 추가
+                    messages.append({"role": "user", "content": query})
                     
                     response_result = client.chat.completions.create(
                         model="gpt-4o-mini",
-                        messages=[
-                            {"role": "user", "content": simple_response_prompt}
-                        ],
+                        messages=messages,
                         temperature=0.7,
-                        max_tokens=100
+                        max_tokens=150
                     )
                     
                     response = response_result.choices[0].message.content.strip()
@@ -251,7 +271,13 @@ def answer_query(query: str, openai_api_key: str = None, explicit_domain: str = 
             print(f"DEBUG: 검색 전략: {search_strategy}")
             
             # 전략에 따른 검색 실행
-            if search_strategy['type'] == 'domain_specific':
+            if search_strategy['type'] == 'form_specific':
+                # 서식 전용 검색
+                searcher = RagSearcher()
+                search_results = searcher.search_forms(query=query, top_k=10)
+                logger.info(f"서식 전용 검색 실행 - 결과 수: {len(search_results)}")
+                print(f"DEBUG: 서식 전용 검색 실행 - 결과 수: {len(search_results)}")
+            elif search_strategy['type'] == 'domain_specific':
                 search_results = RagSearcher().search_by_domain(
                     query=query, 
                     domain=search_strategy['domain'], 
@@ -307,18 +333,23 @@ def answer_query(query: str, openai_api_key: str = None, explicit_domain: str = 
                     logger.info("검색 결과 부족으로 기본 메시지 반환")
                     return result
                 
-                # 컨텍스트 포맷팅 및 답변 생성
-                contexts = [result['text'] for result in search_results[:5]]
-                
-                # 시스템 및 사용자 프롬프트 로드
-                system_prompt, user_prompt = _init_prompts()
-                
-                # 답변 생성 (올바른 인자로 호출)
-                answer = make_answer(
-                    query=query,
-                    contexts=search_results[:5],  # 전체 결과 객체 전달
-                    api_key=None  # 환경변수에서 자동으로 가져옴
-                )
+                # 서식 검색 결과인 경우 특별 처리
+                if search_strategy['type'] == 'form_specific':
+                    answer = _generate_form_response(query, search_results[:5])
+                else:
+                    # 일반 답변 생성
+                    contexts = [result['text'] for result in search_results[:5]]
+                    
+                    # 시스템 및 사용자 프롬프트 로드
+                    system_prompt, user_prompt = _init_prompts()
+                    
+                    # 답변 생성 (올바른 인자로 호출)
+                    answer = make_answer(
+                        query=query,
+                        contexts=search_results[:5],  # 전체 결과 객체 전달
+                        api_key=None,  # 환경변수에서 자동으로 가져옴
+                        conversation_history=conversation_history # 대화 히스토리 전달
+                    )
                 
                 # 답변 품질 검증
                 if not validate_answer_quality(answer, query):
@@ -327,7 +358,11 @@ def answer_query(query: str, openai_api_key: str = None, explicit_domain: str = 
                     answer = "죄송합니다. 질문에 대한 적절한 답변을 생성하지 못했습니다. 다른 방식으로 질문해 주시거나, 관련 도메인을 명시해 주세요."
                 
                 # 참고 문서 정보 생성 (새로운 메타데이터 활용)
-                sources = _format_sources_with_metadata(search_results[:5])
+                if search_strategy['type'] == 'form_specific':
+                    # 서식 검색 결과의 경우 서식 정보를 소스로 제공
+                    sources = _format_form_sources(search_results[:5])
+                else:
+                    sources = _format_sources_with_metadata(search_results[:5])
                 
                 result = {
                     'success': True,
@@ -372,6 +407,51 @@ def answer_query(query: str, openai_api_key: str = None, explicit_domain: str = 
             'answer': "죄송합니다. 시스템 오류가 발생했습니다."
         }
 
+def _is_form_related_query(query: str, keywords: List[str]) -> bool:
+    """
+    서식 관련 질문인지 판단
+    
+    Args:
+        query: 사용자 질문
+        keywords: 추출된 키워드
+    
+    Returns:
+        서식 관련 질문 여부
+    """
+    query_lower = query.lower()
+    
+    # 서식 관련 키워드 패턴
+    form_keywords = [
+        '서식', '양식', '신청서', '제출서', '청구서', '요청서', '보고서', '평가서',
+        '확인서', '서약서', '계약서', '승인서', '통지서', '등록서', '변경서',
+        '관리서', '운영서', '처리서', '대장', '접수증', '일지', '체크리스트',
+        '점검표', '결과표', '검토서', '완료확인서', '취소신청서', '재발급신청서',
+        '인증연장신청서', '윤리서약서', '보안서약서', '직무윤리서약서'
+    ]
+    
+    # 질문에 서식 관련 키워드가 포함되어 있는지 확인
+    for keyword in form_keywords:
+        if keyword in query_lower:
+            return True
+    
+    # 키워드 리스트에서도 확인
+    for keyword in keywords:
+        if any(form_kw in keyword.lower() for form_kw in form_keywords):
+            return True
+    
+    # 서식 요청 패턴 확인
+    form_request_patterns = [
+        '서식 주세요', '양식 주세요', '신청서 주세요', '양식 찾아줘',
+        '서식 찾아줘', '신청서 찾아줘', '양식 다운로드', '서식 다운로드',
+        '어떤 서식', '어떤 양식', '필요한 서식', '필요한 양식'
+    ]
+    
+    for pattern in form_request_patterns:
+        if pattern in query_lower:
+            return True
+    
+    return False
+
 def _determine_search_strategy(query: str, keywords: List[str], estimated_domains: List[str]) -> Dict[str, Any]:
     """
     질문과 키워드를 분석하여 최적의 검색 전략 결정
@@ -385,6 +465,14 @@ def _determine_search_strategy(query: str, keywords: List[str], estimated_domain
         검색 전략 딕셔너리
     """
     query_lower = query.lower()
+    
+    # 0. 서식 관련 질문 우선 검사
+    if _is_form_related_query(query, keywords):
+        return {
+            'type': 'form_specific',
+            'confidence': 'high',
+            'priority': 'forms_first'
+        }
     
     # 1. 도메인 특정 검색 전략
     if estimated_domains and len(estimated_domains) == 1:
@@ -427,6 +515,96 @@ def _determine_search_strategy(query: str, keywords: List[str], estimated_domain
         'min_recency': None,
         'confidence': 'low'
     }
+
+def _generate_form_response(query: str, form_results: List[Dict[str, Any]]) -> str:
+    """
+    서식 검색 결과를 기반으로 서식 제공 응답 생성
+    
+    Args:
+        query: 사용자 질문
+        form_results: 서식 검색 결과
+    
+    Returns:
+        서식 제공 응답
+    """
+    if not form_results:
+        return "죄송합니다. 요청하신 서식을 찾을 수 없습니다. 다른 키워드로 검색해 보시거나 관련 부서에 문의해 주세요."
+    
+    response_parts = []
+    
+    # 서식 목록 구성
+    form_list = []
+    for i, result in enumerate(form_results, 1):
+        form_title = result.get('form_title', '')
+        form_file_uri = result.get('form_file_uri', '')
+        source_file = result.get('file_name', '')
+        page = result.get('pages', '')
+        
+        form_info = f"{i}. {form_title}"
+        if source_file:
+            form_info += f" (출처: {source_file}"
+            if page:
+                form_info += f", p.{page}"
+            form_info += ")"
+        
+        form_list.append(form_info)
+        
+        # S3 파일 링크가 있으면 추가
+        if form_file_uri:
+            # S3 키 추출 (s3://bucket/key 형식에서 key 부분만)
+            s3_key = form_file_uri.replace('s3://companypolicy/', '')
+            # S3 퍼블릭 URL 직접 생성
+            bucket_name = 'companypolicy'
+            region = 'ap-northeast-2'
+            download_url = f"https://{bucket_name}.s3.{region}.amazonaws.com/{s3_key}"
+            # 파일명 추출 (S3 키에서 마지막 부분)
+            filename = s3_key.split('/')[-1]
+            # 클릭 가능한 마크다운 링크 형식으로 변경
+            form_list.append(f"  ({download_url})")
+    
+    # 응답 구성
+    response_parts.append("요청하신 서식을 찾았습니다:")
+    response_parts.append("")
+    response_parts.extend(form_list)
+    response_parts.append("")
+    response_parts.append("💡 서식 사용 시 주의사항:")
+    response_parts.append("- 서식은 최신 버전인지 확인해 주세요")
+    response_parts.append("- 작성 전 관련 규정을 숙지해 주세요")
+    response_parts.append("- 제출 전 내용을 다시 한번 검토해 주세요")
+    
+    return "\n".join(response_parts)
+
+def _format_form_sources(form_results: List[Dict[str, Any]]) -> List[str]:
+    """
+    서식 검색 결과를 소스 정보로 포맷팅
+    
+    Args:
+        form_results: 서식 검색 결과 리스트
+    
+    Returns:
+        포맷팅된 서식 소스 리스트
+    """
+    sources = []
+    
+    for result in form_results:
+        form_title = result.get('form_title', '')
+        source_file = result.get('file_name', '')
+        page = result.get('pages', '')
+        form_file_uri = result.get('form_file_uri', '')
+        
+        source_info = f"서식: {form_title}"
+        if source_file:
+            source_info += f" (출처: {source_file}"
+            if page:
+                source_info += f", p.{page}"
+            source_info += ")"
+        
+        if form_file_uri:
+            source_info += f" [다운로드 가능]"
+        
+        sources.append(source_info)
+    
+    return sources
 
 def _format_sources_with_metadata(search_results: List[Dict[str, Any]]) -> List[str]:
     """
@@ -554,19 +732,20 @@ def health_check() -> Dict[str, Any]:
             'timestamp': datetime.datetime.now().isoformat()
         }
 
-def rag_answer_enhanced(user_query: str) -> Dict[str, Any]:
+def rag_answer_enhanced(user_query: str, conversation_history: List[Dict] = None) -> Dict[str, Any]:
     """
-    향상된 RAG 답변 생성 (기존 rag_answer와 호환)
+    향상된 RAG 답변 생성 (멀티턴 대화 지원)
     
     Args:
         user_query: 사용자 질문
+        conversation_history: 대화 히스토리 (선택사항)
     
     Returns:
         답변과 메타데이터를 포함한 결과
     """
     try:
         # OpenAI API 키는 환경변수에서 자동으로 가져옴
-        result = answer_query(user_query)
+        result = answer_query(user_query, conversation_history=conversation_history)
         
         # answer_query는 항상 answer를 반환하므로 success 체크 불필요
         search_strategy = result.get('search_strategy', '')
@@ -581,7 +760,8 @@ def rag_answer_enhanced(user_query: str) -> Dict[str, Any]:
                 'keywords': result.get('keywords', []),
                 'total_time': result.get('total_time', 0),
                 'search_time': result.get('search_time', 0),
-                'answer_time': result.get('answer_time', 0)
+                'answer_time': result.get('answer_time', 0),
+                'conversation_history_used': bool(conversation_history)
             }
         }
             

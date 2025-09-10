@@ -129,7 +129,10 @@ function Sidebar({
         {/* 상단 로고 */}
         <div
           className="flex items-center justify-center h-16 border-b border-gray-700 cursor-pointer"
-          onClick={() => window.location.reload()}
+          onClick={() => {
+            sessionStorage.clear();
+            window.location.reload();
+          }}
         >
           {/* <h1 className="text-xl font-bold">NAVI</h1> */}
           <img src="/images/logo3.png" alt="NAVI Logo" className="h-28 mr-3" />
@@ -261,17 +264,26 @@ function Sidebar({
                             title={receipt.created_at}
                           >
                             {receipt.created_at
-                              ? new Date(receipt.created_at).toLocaleString(
-                                  "ko-KR",
-                                  {
-                                    year: "numeric",
-                                    month: "2-digit",
-                                    day: "2-digit",
-                                    hour: "2-digit",
-                                    minute: "2-digit",
-                                  }
-                                )
+                              ? (() => {
+                                  const d = new Date(receipt.created_at);
+                                  const year = d.getFullYear();
+                                  const month = d.getMonth() + 1;
+                                  const day = d.getDate();
+                                  const hour = String(d.getHours()).padStart(
+                                    2,
+                                    "0"
+                                  );
+                                  const minute = String(
+                                    d.getMinutes()
+                                  ).padStart(2, "0");
+                                  return `${year}년 ${month}월 ${day}일 ${hour}:${minute}`;
+                                })()
                               : "새 영수증"}
+                            {receipt.status === "pending" ? (
+                              <span>&nbsp;&nbsp;처리중</span>
+                            ) : receipt.status === "processed" ? (
+                              <span>&nbsp;&nbsp;처리완료</span>
+                            ) : null}
                           </button>
                         </li>
                       );
@@ -306,7 +318,7 @@ function Sidebar({
                 <button
                   type="button"
                   onClick={onUserNameClick}
-                  className="text-m font-bold truncate hover:text-gray-400 transition cursor-pointer"
+                  className="text-base font-bold truncate hover:text-gray-400 transition cursor-pointer"
                   title="마이페이지로 이동"
                 >
                   {displayName}

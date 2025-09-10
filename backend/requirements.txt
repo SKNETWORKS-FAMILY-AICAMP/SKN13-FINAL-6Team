@@ -55,3 +55,10 @@ langchain-upstage==0.7.3
 
 # excel
 openpyxl
+
+# Password Hashing
+argon2-cffi
+
+
+# image process
+opencv-python-headless==4.12.0.88
