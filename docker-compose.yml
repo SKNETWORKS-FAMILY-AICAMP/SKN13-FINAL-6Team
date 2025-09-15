@@ -3,6 +3,8 @@ services:
     image: nginx:latest
     volumes:
       - ./nginx/default.conf:/etc/nginx/conf.d/default.conf
+      - ./nginx/ssl:/etc/nginx/ssl
+      - /etc/letsencrypt:/etc/letsencrypt:ro
       - static_volume:/app/backend/staticfiles
       - media_volume:/app/backend/mediafiles
     ports:
@@ -32,9 +34,12 @@ services:
       - QDRANT_VECTOR_SIZE=1024
       - RAG_TOP_K=5
       - TZ=Asia/Seoul
+      - DEBUG=False
+      - ALLOWED_HOSTS=growing.ai.kr,www.growing.ai.kr,api.growing.ai.kr
+      - CSRF_TRUSTED_ORIGINS=https://growing.ai.kr,https://www.growing.ai.kr
     depends_on:
       - qdrant
-    command: python manage.py runserver 0.0.0.0:8000
+    command: uvicorn config.asgi:application --host 0.0.0.0 --port 8000 --reload
 
   qdrant:
     image: qdrant/qdrant:latest
