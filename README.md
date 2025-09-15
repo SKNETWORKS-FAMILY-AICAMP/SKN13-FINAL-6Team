@@ -119,6 +119,16 @@ SKN13-FINAL-6TEAM/
 
 ---
 
+## 시스템 아키텍처
+<img src="images\시스템 아키텍처.png" width="500" >
+
+---
+
+## DB 구조와 역할
+<img src="images\DB 구조와 역할.png" width="500" >
+
+---
+
 ## 서비스 구현 화면
 
 1. 업무 가이드 챗봇
